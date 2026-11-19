@@ -4,7 +4,6 @@ import '../../core/constants/app_dimensions.dart';
 import '../../core/constants/app_typography.dart';
 import '../../core/router/app_routes.dart';
 import '../../core/state/app_state.dart';
-import '../../widgets/obp_button.dart';
 import '../../widgets/obp_card.dart';
 import '../../widgets/obp_pulse_dot.dart';
 import '../../widgets/obp_status_badge.dart';
@@ -15,7 +14,8 @@ class HomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final appState = AppStateScope.of(context);
-    final driver = appState.driver;
+    final user = appState.user;
+    final vehicle = appState.assignedVehicle;
     final quota = appState.quota;
     final latestClaim = appState.claims.isNotEmpty ? appState.claims.first : null;
 
@@ -37,12 +37,16 @@ class HomeScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Top Header: Greeting, Meta & Bell
-                _buildHeader(context, appState, driver),
-                const SizedBox(height: AppDimensions.lg),
+                // Top Header: Greeting, Shift Status & Bell
+                _buildHeader(context, appState, user, vehicle),
+                const SizedBox(height: AppDimensions.md),
 
-                // Primary Fuel Quota Card (SKDS 2.0)
-                _buildQuotaCard(quota),
+                // Assigned Lorry Specification Card (Read-only from Firestore)
+                _buildAssignedVehicleCard(vehicle),
+                const SizedBox(height: AppDimensions.md),
+
+                // Primary SKDS Quota Gauge Card
+                _buildQuotaCard(vehicle, quota),
                 const SizedBox(height: AppDimensions.md),
 
                 // Quick Fuel Claim CTA Banner
@@ -50,7 +54,7 @@ class HomeScreen extends StatelessWidget {
                 const SizedBox(height: AppDimensions.md),
 
                 // Operational Diagnostics / Field Snapshot
-                _buildFieldDiagnostics(context),
+                _buildFieldDiagnostics(context, vehicle),
                 const SizedBox(height: AppDimensions.lg),
 
                 // Recent Claim Activity Row
@@ -64,7 +68,12 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildHeader(BuildContext context, AppState appState, dynamic driver) {
+  Widget _buildHeader(
+    BuildContext context,
+    AppState appState,
+    dynamic user,
+    dynamic vehicle,
+  ) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -76,54 +85,34 @@ class HomeScreen extends StatelessWidget {
                 children: [
                   const ObpPulseDot(color: AppColors.statusSuccess, size: 8.0),
                   const SizedBox(width: 6.0),
-                  Text(
-                    'Shift Active • ${driver.depot}',
-                    style: AppTypography.labelSm.copyWith(
-                      color: AppColors.statusSuccess,
-                      fontWeight: FontWeight.w600,
+                  Flexible(
+                    child: Text(
+                      'Shift Active • ${vehicle.depot}',
+                      style: AppTypography.labelSm.copyWith(
+                        color: AppColors.statusSuccess,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 4.0),
               Text(
-                'Hello, ${driver.name.split(' ').first}',
+                'Hello, ${user.displayName.split(' ').first}',
                 style: AppTypography.headlineLg,
               ),
               const SizedBox(height: 2.0),
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 2.0),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceContainerHigh,
-                      borderRadius: BorderRadius.circular(4.0),
-                      border: Border.all(color: AppColors.surfaceBorder, width: 0.8),
-                    ),
-                    child: Text(
-                      driver.lorryPlate,
-                      style: AppTypography.labelSm.copyWith(
-                        color: AppColors.secondaryContainer,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 6.0),
-                  Expanded(
-                    child: Text(
-                      driver.lorryModel,
-                      style: AppTypography.bodySm.copyWith(fontSize: 12.0),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
+              Text(
+                'Driver ID: ${user.driverId} • Ong Brothers Petroleum',
+                style: AppTypography.caption.copyWith(color: AppColors.textMuted),
               ),
             ],
           ),
         ),
         Row(
           children: [
-            // Notifications Icon with badge
+            // Notifications Icon with live unread badge
             Stack(
               clipBehavior: Clip.none,
               children: [
@@ -163,7 +152,7 @@ class HomeScreen extends StatelessWidget {
               ],
             ),
             const SizedBox(width: 8.0),
-            // Profile Avatar Quick Tap
+            // Driver Avatar Quick Tap
             GestureDetector(
               onTap: () => appState.setNavigationIndex(3),
               child: Container(
@@ -191,8 +180,91 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildQuotaCard(dynamic quota) {
-    final percentRemaining = (quota.percentageRemaining / 100.0).clamp(0.0, 1.0);
+  Widget _buildAssignedVehicleCard(dynamic vehicle) {
+    return ObpCard(
+      accentColor: AppColors.primaryContainer,
+      padding: const EdgeInsets.all(AppDimensions.md),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.local_shipping_rounded, color: AppColors.secondaryContainer, size: 20.0),
+              const SizedBox(width: 8.0),
+              Expanded(
+                child: Text(
+                  'Assigned Delivery Lorry',
+                  style: AppTypography.labelMd.copyWith(color: AppColors.textPrimary),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8.0),
+              ObpStatusBadge.verified(
+                label: vehicle.status.toString().toUpperCase(),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppDimensions.sm),
+          Container(
+            padding: const EdgeInsets.all(12.0),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceContainerLowest,
+              borderRadius: BorderRadius.circular(AppDimensions.radiusMd),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        vehicle.plateNumber,
+                        style: AppTypography.headlineMd.copyWith(
+                          color: AppColors.secondaryContainer,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.0,
+                        ),
+                      ),
+                      const SizedBox(height: 2.0),
+                      Text(
+                        vehicle.model,
+                        style: AppTypography.bodySm,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12.0),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      'Odometer Meter',
+                      style: AppTypography.caption.copyWith(color: AppColors.textMuted),
+                    ),
+                    const SizedBox(height: 2.0),
+                    Text(
+                      '${vehicle.currentOdometer} KM',
+                      style: AppTypography.labelMd.copyWith(color: AppColors.textPrimary),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuotaCard(dynamic vehicle, dynamic quota) {
+    final remaining = vehicle.remainingQuota;
+    final limit = vehicle.monthlyQuotaLimit;
+    final used = vehicle.currentQuotaUsage;
+    final percentRemaining = (remaining / limit).clamp(0.0, 1.0);
 
     return ObpCard(
       accentColor: AppColors.secondaryContainer,
@@ -201,41 +273,41 @@ class HomeScreen extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(6.0),
-                    decoration: BoxDecoration(
-                      color: AppColors.secondaryContainer.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(6.0),
-                    ),
-                    child: const Icon(
-                      Icons.local_gas_station_rounded,
-                      color: AppColors.secondaryContainer,
-                      size: 18.0,
-                    ),
-                  ),
-                  const SizedBox(width: 8.0),
-                  const Text(
-                    'SKDS 2.0 Diesel Quota',
-                    style: AppTypography.labelMd,
-                  ),
-                ],
-              ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 3.0),
+                padding: const EdgeInsets.all(6.0),
+                decoration: BoxDecoration(
+                  color: AppColors.secondaryContainer.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6.0),
+                ),
+                child: const Icon(
+                  Icons.local_gas_station_rounded,
+                  color: AppColors.secondaryContainer,
+                  size: 18.0,
+                ),
+              ),
+              const SizedBox(width: 8.0),
+              const Expanded(
+                child: Text(
+                  'SKDS 2.0 Diesel Allowance',
+                  style: AppTypography.labelMd,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8.0),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 2.5),
                 decoration: BoxDecoration(
                   color: AppColors.surfaceContainerHigh,
                   borderRadius: BorderRadius.circular(9999.0),
                   border: Border.all(color: AppColors.surfaceBorder),
                 ),
                 child: Text(
-                  'Resets in ${quota.resetDaysRemaining}d',
+                  'Pool 5,400 L / 4 Lorries',
                   style: AppTypography.labelSm.copyWith(
                     color: AppColors.textMuted,
-                    fontSize: 11.0,
+                    fontSize: 9.5,
                   ),
                 ),
               ),
@@ -249,14 +321,14 @@ class HomeScreen extends StatelessWidget {
             textBaseline: TextBaseline.alphabetic,
             children: [
               Text(
-                quota.currentBalance.toStringAsFixed(0),
+                remaining.toStringAsFixed(0),
                 style: AppTypography.numericDisplay.copyWith(
                   color: AppColors.secondaryContainer,
                 ),
               ),
               const SizedBox(width: 6.0),
               Text(
-                '/ ${quota.monthlyLimit.toStringAsFixed(0)} Liters',
+                '/ ${limit.toStringAsFixed(0)} L',
                 style: AppTypography.headlineMd.copyWith(
                   color: AppColors.textMuted,
                 ),
@@ -290,7 +362,7 @@ class HomeScreen extends StatelessWidget {
           ),
           const SizedBox(height: AppDimensions.md),
 
-          // Subsidized Rate vs Market Rate breakdown
+          // Usage & Subsidized Rate Breakdown
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
             decoration: BoxDecoration(
@@ -298,27 +370,29 @@ class HomeScreen extends StatelessWidget {
               borderRadius: BorderRadius.circular(AppDimensions.radiusMd),
             ),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
+                Expanded(
+                  child: Text(
+                    'Used this month: ${used.toStringAsFixed(1)} L',
+                    style: AppTypography.labelSm.copyWith(color: AppColors.textMuted),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8.0),
                 Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     const Icon(Icons.verified_outlined, size: 14.0, color: AppColors.statusSuccess),
                     const SizedBox(width: 4.0),
                     Text(
                       'Subsidized RM${quota.subsidizedRate.toStringAsFixed(2)}/L',
                       style: AppTypography.labelSm.copyWith(
-                        color: AppColors.textPrimary,
+                        color: AppColors.statusSuccess,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
                   ],
-                ),
-                Text(
-                  'Market: RM${quota.marketRate.toStringAsFixed(2)}/L',
-                  style: AppTypography.labelSm.copyWith(
-                    color: AppColors.textMuted,
-                    decoration: TextDecoration.lineThrough,
-                  ),
                 ),
               ],
             ),
@@ -381,7 +455,7 @@ class HomeScreen extends StatelessWidget {
                       ),
                       SizedBox(height: 2.0),
                       Text(
-                        'Scan Odometer • GPS Check • Snap Receipt',
+                        'OCR Odometer • GPS Geofence • Shell Receipt',
                         style: TextStyle(
                           fontSize: 12.0,
                           color: Color(0xFFFFDAD8),
@@ -403,7 +477,7 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildFieldDiagnostics(BuildContext context) {
+  Widget _buildFieldDiagnostics(BuildContext context, dynamic vehicle) {
     return Row(
       children: [
         // Nearest Shell Station
@@ -477,8 +551,8 @@ class HomeScreen extends StatelessWidget {
                 const SizedBox(height: AppDimensions.sm),
                 const Text('Last Odometer', style: AppTypography.labelSm),
                 const SizedBox(height: 2.0),
-                const Text(
-                  '248,650 KM',
+                Text(
+                  '${vehicle.currentOdometer} KM',
                   style: AppTypography.labelMd,
                 ),
                 const SizedBox(height: 2.0),

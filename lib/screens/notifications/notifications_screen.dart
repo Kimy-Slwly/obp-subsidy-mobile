@@ -1,3 +1,4 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_dimensions.dart';
@@ -41,7 +42,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
             onPressed: () {
               appState.markAllNotificationsRead();
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('All notifications marked as read.')),
+                const SnackBar(content: Text('All notifications marked as read in Firestore.')),
               );
             },
           ),
@@ -49,43 +50,48 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppDimensions.screenMargin,
-            vertical: AppDimensions.sm,
-          ),
+          padding: const EdgeInsets.symmetric(vertical: AppDimensions.sm),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Driver Fleet Pulse Quick Glance Hero Card
-              _buildPulseHeroCard(quota),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: AppDimensions.screenMargin),
+                child: _buildPulseHeroCard(quota),
+              ),
               const SizedBox(height: AppDimensions.md),
 
-              // Filter Category Chips
+              // Filter Category Chips (Edge-to-Edge horizontal scrolling)
               _buildFilterChips(allNotifications),
               const SizedBox(height: AppDimensions.md),
 
-              // Notifications List
-              if (filtered.isNotEmpty)
-                ListView.separated(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  itemCount: filtered.length,
-                  separatorBuilder: (ctx, i) => const SizedBox(height: AppDimensions.sm),
-                  itemBuilder: (ctx, i) {
-                    final item = filtered[i];
-                    return _buildNotificationCard(item, appState);
-                  },
-                )
-              else
-                _buildEmptyState(),
+              // Notifications List or Clean Empty State
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: AppDimensions.screenMargin),
+                child: filtered.isNotEmpty
+                    ? ListView.separated(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: filtered.length,
+                        separatorBuilder: (ctx, i) => const SizedBox(height: AppDimensions.sm),
+                        itemBuilder: (ctx, i) {
+                          final item = filtered[i];
+                          return _buildNotificationCard(item, appState);
+                        },
+                      )
+                    : _buildEmptyState(),
+              ),
 
               const SizedBox(height: AppDimensions.lg),
 
               // End of Alerts Stamp
-              Center(
-                child: Text(
-                  'End of Alerts Feed',
-                  style: AppTypography.caption.copyWith(color: AppColors.textHint),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: AppDimensions.screenMargin),
+                child: Center(
+                  child: Text(
+                    'End of Alerts Feed • Synchronized with Cloud Firestore',
+                    style: AppTypography.caption.copyWith(color: AppColors.textHint),
+                  ),
                 ),
               ),
               const SizedBox(height: AppDimensions.xl),
@@ -108,13 +114,18 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '${(percentUsed * 100).toStringAsFixed(0)}% Monthly Allowance Consumed',
-                style: AppTypography.labelMd.copyWith(
-                  color: AppColors.textPrimary,
-                  fontWeight: FontWeight.w700,
+              Expanded(
+                child: Text(
+                  '${(percentUsed * 100).toStringAsFixed(0)}% Monthly Allowance Consumed',
+                  style: AppTypography.labelMd.copyWith(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ),
+              const SizedBox(width: 8.0),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 2.0),
                 decoration: BoxDecoration(
@@ -156,44 +167,70 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
   Widget _buildFilterChips(List<NotificationModel> all) {
     return SizedBox(
-      height: 36.0,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        children: NotificationCategory.values.map((cat) {
-          final isSelected = cat == _selectedCategory;
-          final count = cat == NotificationCategory.all
-              ? all.length
-              : all.where((n) => n.category == cat).length;
+      height: 38.0,
+      child: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(
+          dragDevices: {
+            PointerDeviceKind.touch,
+            PointerDeviceKind.mouse,
+            PointerDeviceKind.stylus,
+            PointerDeviceKind.trackpad,
+          },
+        ),
+        child: ListView(
+          scrollDirection: Axis.horizontal,
+          physics: const BouncingScrollPhysics(parent: AlwaysScrollableScrollPhysics()),
+          primary: false,
+          padding: const EdgeInsets.symmetric(horizontal: AppDimensions.screenMargin),
+          clipBehavior: Clip.none,
+          children: NotificationCategory.values.map((cat) {
+            final isSelected = cat == _selectedCategory;
+            final count = cat == NotificationCategory.all
+                ? all.length
+                : all.where((n) => n.category == cat).length;
 
-          return Padding(
-            padding: const EdgeInsets.only(right: 8.0),
-            child: Material(
-              color: isSelected ? AppColors.primaryContainer : AppColors.surfaceContainerHigh,
-              borderRadius: BorderRadius.circular(9999.0),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(9999.0),
-                onTap: () => setState(() => _selectedCategory = cat),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14.0),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
+            return Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: Builder(
+                builder: (chipContext) {
+                  return Material(
+                    color: isSelected ? AppColors.primaryContainer : AppColors.surfaceContainerHigh,
                     borderRadius: BorderRadius.circular(9999.0),
-                    border: Border.all(
-                      color: isSelected ? AppColors.primaryContainer : AppColors.surfaceBorder,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(9999.0),
+                      onTap: () {
+                        setState(() => _selectedCategory = cat);
+                        Scrollable.ensureVisible(
+                          chipContext,
+                          duration: const Duration(milliseconds: 250),
+                          alignment: 0.5,
+                          curve: Curves.easeInOut,
+                        );
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 14.0),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(9999.0),
+                          border: Border.all(
+                            color: isSelected ? AppColors.primaryContainer : AppColors.surfaceBorder,
+                          ),
+                        ),
+                        child: Text(
+                          '${cat.label} ($count)',
+                          style: AppTypography.labelSm.copyWith(
+                            color: isSelected ? Colors.white : AppColors.textPrimary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
-                  child: Text(
-                    '${cat.label} ($count)',
-                    style: AppTypography.labelSm.copyWith(
-                      color: isSelected ? Colors.white : AppColors.textPrimary,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
+                  );
+                },
               ),
-            ),
-          );
-        }).toList(),
+            );
+          }).toList(),
+        ),
       ),
     );
   }
@@ -232,6 +269,11 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       border: Border.all(
         color: item.isRead ? AppColors.surfaceBorder : AppColors.primaryContainer.withValues(alpha: 0.35),
       ),
+      onTap: () {
+        if (!item.isRead) {
+          appState.markNotificationRead(item.id);
+        }
+      },
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -283,7 +325,7 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      item.timestamp,
+                      item.timeAgo,
                       style: AppTypography.caption.copyWith(color: AppColors.textHint),
                     ),
                     if (item.actionLabel != null)
@@ -295,6 +337,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
                           foregroundColor: AppColors.secondaryContainer,
                         ),
                         onPressed: () {
+                          if (!item.isRead) {
+                            appState.markNotificationRead(item.id);
+                          }
                           if (item.actionLabel == 'Update Photo') {
                             Navigator.of(context).pushNamed(AppRoutes.newClaim);
                           } else {

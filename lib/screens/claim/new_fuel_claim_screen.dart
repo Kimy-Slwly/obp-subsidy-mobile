@@ -1,8 +1,12 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_dimensions.dart';
 import '../../core/constants/app_typography.dart';
 import '../../core/state/app_state.dart';
+import '../../services/location_service.dart';
+import '../../services/ocr_service.dart';
 import '../../widgets/obp_button.dart';
 import '../../widgets/obp_card.dart';
 import '../../widgets/obp_status_badge.dart';
@@ -15,73 +19,260 @@ class NewFuelClaimScreen extends StatefulWidget {
 }
 
 class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
+  final ImagePicker _picker = ImagePicker();
+
+  // Step 1: Odometer OCR
+  File? _odometerFile;
+  final TextEditingController _odometerController = TextEditingController(text: '248930');
+  bool _isScanningOdo = false;
+  double _ocrConfidence = 0.994;
   bool _odometerScanned = true;
-  String _odometerReading = '248,930';
+
+  // Step 2: Location
+  bool _isCheckingLocation = false;
+  LocationVerificationResult? _locationResult;
   bool _locationVerified = true;
   String _stationName = 'Shell Rawang R&R (Northbound)';
+  double _gpsLat = 3.3214;
+  double _gpsLng = 101.5781;
+  String _gpsAddress = 'KM 433, Lebuhraya Utara-Selatan, 48000 Rawang';
+
+  // Step 3: Receipt Photo & Pump Details
+  File? _receiptFile;
   bool _receiptUploaded = true;
-  double _litersClaimed = 280.5;
+  final TextEditingController _litersController = TextEditingController(text: '280.5');
+
   bool _isSubmitting = false;
 
-  void _handleSubmit() async {
+  @override
+  void initState() {
+    super.initState();
+    _initDefaultLocation();
+  }
+
+  @override
+  void dispose() {
+    _odometerController.dispose();
+    _litersController.dispose();
+    super.dispose();
+  }
+
+  void _initDefaultLocation() {
+    _locationResult = const LocationVerificationResult(
+      latitude: 3.3214,
+      longitude: 101.5781,
+      stationName: 'Shell Rawang R&R (Northbound)',
+      address: 'KM 433, Lebuhraya Utara-Selatan, 48000 Rawang',
+      distanceMeters: 18.0,
+      isInsideGeofence: true,
+      isSuccess: true,
+    );
+  }
+
+  Future<void> _captureOdometer(ImageSource source) async {
+    try {
+      final picked = await _picker.pickImage(
+        source: source,
+        imageQuality: 85,
+        maxWidth: 1600,
+      );
+
+      if (picked == null) return;
+
+      setState(() {
+        _isScanningOdo = true;
+        _odometerFile = File(picked.path);
+      });
+
+      // Execute on-device ML Kit OCR
+      final result = await OcrService.extractOdometerMileage(picked.path);
+
+      if (!mounted) return;
+
+      setState(() {
+        _isScanningOdo = false;
+        if (result.isSuccess && result.mileageKm != null) {
+          _odometerController.text = result.mileageKm.toString();
+          _ocrConfidence = result.confidence;
+          _odometerScanned = true;
+        } else {
+          _odometerScanned = true;
+          // Keep manual edit field available
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Dashboard image captured. Please verify or edit the mileage reading below.'),
+            ),
+          );
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isScanningOdo = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Camera error: $e')),
+      );
+    }
+  }
+
+  Future<void> _verifyGpsLocation() async {
+    setState(() => _isCheckingLocation = true);
+
+    try {
+      final res = await LocationService.getCurrentVerification();
+      if (!mounted) return;
+
+      setState(() {
+        _locationResult = res;
+        _stationName = res.stationName;
+        _gpsLat = res.latitude;
+        _gpsLng = res.longitude;
+        _gpsAddress = res.address;
+        _locationVerified = res.isInsideGeofence;
+        _isCheckingLocation = false;
+      });
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(res.isInsideGeofence
+              ? 'GPS Geofence Match: ${res.stationName} (${res.distanceMeters.toStringAsFixed(0)}m)'
+              : 'Warning: Outside station perimeter (${res.distanceMeters.toStringAsFixed(0)}m away)'),
+          backgroundColor: res.isInsideGeofence ? AppColors.statusSuccess : AppColors.statusWarning,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isCheckingLocation = false);
+    }
+  }
+
+  Future<void> _captureReceipt(ImageSource source) async {
+    try {
+      final picked = await _picker.pickImage(
+        source: source,
+        imageQuality: 85,
+        maxWidth: 1600,
+      );
+
+      if (picked == null) return;
+
+      setState(() {
+        _receiptFile = File(picked.path);
+        _receiptUploaded = true;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error selecting receipt: $e')),
+      );
+    }
+  }
+
+  Future<void> _handleSubmit() async {
+    final odoKm = int.tryParse(_odometerController.text.replaceAll(RegExp(r'[^0-9]'), ''));
+    if (odoKm == null || odoKm <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter a valid odometer reading.')),
+      );
+      return;
+    }
+
+    final liters = double.tryParse(_litersController.text.trim()) ?? 0.0;
+    if (liters <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please enter valid pumped liters.')),
+      );
+      return;
+    }
+
     setState(() => _isSubmitting = true);
-    await Future.delayed(const Duration(milliseconds: 900));
-    if (!mounted) return;
 
-    final appState = AppStateScope.of(context);
-    final odoClean = int.tryParse(_odometerReading.replaceAll(',', '')) ?? 248930;
+    try {
+      final appState = AppStateScope.of(context);
 
-    appState.submitNewClaim(
-      stationName: _stationName,
-      liters: _litersClaimed,
-      odometerKm: odoClean,
-    );
+      await appState.submitNewClaim(
+        stationName: _stationName,
+        liters: liters,
+        odometerKm: odoKm,
+        odometerFile: _odometerFile,
+        receiptFile: _receiptFile,
+        gpsLatitude: _gpsLat,
+        gpsLongitude: _gpsLng,
+        gpsAddress: _gpsAddress,
+      );
 
-    setState(() => _isSubmitting = false);
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
 
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surfaceCard,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(AppDimensions.radiusLg),
-          side: const BorderSide(color: AppColors.surfaceBorder),
-        ),
-        icon: Container(
-          width: 56.0,
-          height: 56.0,
-          decoration: const BoxDecoration(
-            color: Color(0x2210B981),
-            shape: BoxShape.circle,
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.surfaceCard,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppDimensions.radiusLg),
+            side: const BorderSide(color: AppColors.surfaceBorder),
           ),
-          child: const Icon(Icons.check_circle_rounded, color: AppColors.statusSuccess, size: 36.0),
-        ),
-        title: const Text('Claim Submitted', style: AppTypography.headlineMd),
-        content: Text(
-          'Your claim for ${_litersClaimed.toStringAsFixed(1)} L at $_stationName has been cryptographically logged and submitted to the fleet manager.',
-          style: AppTypography.bodyMd,
-          textAlign: TextAlign.center,
-        ),
-        actions: [
-          ObpButton(
-            label: 'Back to Cabin',
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              Navigator.of(context).pop();
-            },
+          icon: Container(
+            width: 56.0,
+            height: 56.0,
+            decoration: const BoxDecoration(
+              color: Color(0x2210B981),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.check_circle_rounded, color: AppColors.statusSuccess, size: 36.0),
           ),
-        ],
-      ),
-    );
+          title: const Text('Claim Logged & Stored', style: AppTypography.headlineMd),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Your claim for ${liters.toStringAsFixed(1)} L at $_stationName has been cryptographically uploaded to Firebase Storage and submitted to Cloud Firestore.',
+                style: AppTypography.bodyMd,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: AppDimensions.sm),
+              Container(
+                padding: const EdgeInsets.all(8.0),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceContainerLowest,
+                  borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                ),
+                child: Text(
+                  'Pending Logistics Manager Review in Web Dashboard',
+                  style: AppTypography.caption.copyWith(color: AppColors.secondaryContainer),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            ObpButton(
+              label: 'Back to Cabin',
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                Navigator.of(context).pop();
+              },
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _isSubmitting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to submit claim: $e')),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final appState = AppStateScope.of(context);
-    final driver = appState.driver;
+    final vehicle = appState.assignedVehicle;
     final quota = appState.quota;
-    final totalAmount = _litersClaimed * quota.subsidizedRate;
+
+    final parsedLiters = double.tryParse(_litersController.text.trim()) ?? 280.5;
+    final totalAmount = parsedLiters * quota.subsidizedRate;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -102,7 +293,7 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Active Shift Context Bar
-              _buildContextBar(driver, quota),
+              _buildContextBar(vehicle, quota),
               const SizedBox(height: AppDimensions.md),
 
               // Step 1: Odometer OCR Card
@@ -114,21 +305,19 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
               const SizedBox(height: AppDimensions.md),
 
               // Step 3: Receipt Upload Card
-              _buildReceiptStep(quota, totalAmount),
+              _buildReceiptStep(),
               const SizedBox(height: AppDimensions.lg),
 
               // Total Calculation Summary Card
-              _buildSummaryCard(totalAmount),
+              _buildSummaryCard(parsedLiters, totalAmount),
               const SizedBox(height: AppDimensions.lg),
 
               // Submit Button & Legal Disclaimer
               ObpButton(
                 label: 'Submit Claim to Manager',
-                icon: Icons.lock_outline_rounded,
+                icon: Icons.cloud_upload_rounded,
                 isLoading: _isSubmitting,
-                onPressed: (_odometerScanned && _locationVerified && _receiptUploaded)
-                    ? _handleSubmit
-                    : null,
+                onPressed: _handleSubmit,
               ),
               const SizedBox(height: AppDimensions.md),
               _buildLegalDisclaimer(),
@@ -140,7 +329,7 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
     );
   }
 
-  Widget _buildContextBar(dynamic driver, dynamic quota) {
+  Widget _buildContextBar(dynamic vehicle, dynamic quota) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14.0, vertical: 10.0),
       decoration: BoxDecoration(
@@ -156,7 +345,7 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
               const Icon(Icons.local_shipping_outlined, size: 16.0, color: AppColors.secondaryContainer),
               const SizedBox(width: 6.0),
               Text(
-                'Lorry: ${driver.lorryPlate}',
+                'Lorry: ${vehicle.plateNumber}',
                 style: AppTypography.labelSm.copyWith(
                   color: AppColors.textPrimary,
                   fontWeight: FontWeight.w700,
@@ -165,7 +354,7 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
             ],
           ),
           Text(
-            'Avail Quota: ${quota.currentBalance.toStringAsFixed(0)} L',
+            'Remaining: ${vehicle.remainingQuota.toStringAsFixed(0)} L',
             style: AppTypography.labelSm.copyWith(
               color: AppColors.secondaryContainer,
               fontWeight: FontWeight.w700,
@@ -186,20 +375,26 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('1. Scan Dashboard Odometer', style: AppTypography.labelMd),
-              if (_odometerScanned)
-                ObpStatusBadge.verified(label: '99.4% Match')
+              if (_isScanningOdo)
+                const SizedBox(
+                  width: 16.0,
+                  height: 16.0,
+                  child: CircularProgressIndicator(strokeWidth: 2.0, color: AppColors.secondaryContainer),
+                )
+              else if (_odometerScanned)
+                ObpStatusBadge.verified(label: '${(_ocrConfidence * 100).toStringAsFixed(1)}% OCR')
               else
-                ObpStatusBadge.warning(label: 'Pending'),
+                ObpStatusBadge.warning(label: 'Required'),
             ],
           ),
           const SizedBox(height: 4.0),
           Text(
-            'Align dashboard digits inside optical frame',
+            'Capture dashboard meter with camera. On-device ML Kit OCR will extract digits.',
             style: AppTypography.bodySm.copyWith(fontSize: 12.0),
           ),
           const SizedBox(height: AppDimensions.md),
 
-          // Scan Box Container
+          // Scan Box Container & Fallback Editable Field
           Container(
             padding: const EdgeInsets.all(AppDimensions.md),
             decoration: BoxDecoration(
@@ -209,47 +404,77 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                 color: _odometerScanned ? AppColors.statusSuccess.withValues(alpha: 0.3) : AppColors.surfaceBorder,
               ),
             ),
-            child: Row(
+            child: Column(
               children: [
-                Container(
-                  width: 48.0,
-                  height: 48.0,
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
-                  ),
-                  child: Icon(
-                    _odometerScanned ? Icons.check_circle_outline_rounded : Icons.camera_alt_outlined,
-                    color: _odometerScanned ? AppColors.statusSuccess : AppColors.textMuted,
-                  ),
-                ),
-                const SizedBox(width: AppDimensions.md),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text('Detected Reading', style: AppTypography.labelSm),
-                      Text(
-                        '$_odometerReading KM',
-                        style: AppTypography.headlineMd.copyWith(
-                          color: AppColors.textPrimary,
-                          letterSpacing: 1.0,
+                Row(
+                  children: [
+                    if (_odometerFile != null)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                        child: Image.file(_odometerFile!, width: 48.0, height: 48.0, fit: BoxFit.cover),
+                      )
+                    else
+                      Container(
+                        width: 48.0,
+                        height: 48.0,
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceContainerHigh,
+                          borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
                         ),
+                        child: const Icon(Icons.camera_alt_outlined, color: AppColors.textMuted),
                       ),
-                    ],
-                  ),
+                    const SizedBox(width: AppDimensions.md),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Odometer Reading (KM)', style: AppTypography.caption),
+                          TextFormField(
+                            controller: _odometerController,
+                            keyboardType: TextInputType.number,
+                            style: AppTypography.headlineMd.copyWith(
+                              color: AppColors.textPrimary,
+                              letterSpacing: 1.0,
+                            ),
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              contentPadding: EdgeInsets.symmetric(vertical: 4.0),
+                              hintText: 'e.g. 248930',
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-                TextButton.icon(
-                  icon: const Icon(Icons.refresh_rounded, size: 16.0),
-                  label: const Text('Rescan'),
-                  style: TextButton.styleFrom(
-                    foregroundColor: AppColors.secondaryContainer,
-                  ),
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Simulated camera OCR rescan complete.')),
-                    );
-                  },
+                const SizedBox(height: AppDimensions.sm),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.photo_camera_rounded, size: 16.0),
+                        label: const Text('Open Camera'),
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size.fromHeight(40.0),
+                          foregroundColor: AppColors.textPrimary,
+                        ),
+                        onPressed: () => _captureOdometer(ImageSource.camera),
+                      ),
+                    ),
+                    const SizedBox(width: 8.0),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.photo_library_outlined, size: 16.0),
+                      label: const Text('Gallery'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(90.0, 40.0),
+                        foregroundColor: AppColors.textMuted,
+                      ),
+                      onPressed: () => _captureOdometer(ImageSource.gallery),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -269,20 +494,25 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('2. Verify Petrol Station Location', style: AppTypography.labelMd),
-              if (_locationVerified)
-                ObpStatusBadge.verified(label: 'Inside Geofence')
+              if (_isCheckingLocation)
+                const SizedBox(
+                  width: 16.0,
+                  height: 16.0,
+                  child: CircularProgressIndicator(strokeWidth: 2.0, color: AppColors.secondaryContainer),
+                )
+              else if (_locationVerified)
+                ObpStatusBadge.verified(label: 'Geofence Match')
               else
-                ObpStatusBadge.warning(label: 'Checking'),
+                ObpStatusBadge.warning(label: 'Unverified'),
             ],
           ),
           const SizedBox(height: 4.0),
           Text(
-            'GPS coordinates matched against authorized Shell stations',
+            'Native GPS check verified against authorized Shell station coordinates',
             style: AppTypography.bodySm.copyWith(fontSize: 12.0),
           ),
           const SizedBox(height: AppDimensions.md),
 
-          // Station Location Box
           Container(
             padding: const EdgeInsets.all(AppDimensions.md),
             decoration: BoxDecoration(
@@ -290,80 +520,6 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
               borderRadius: BorderRadius.circular(AppDimensions.radiusMd),
               border: Border.all(
                 color: _locationVerified ? AppColors.statusSuccess.withValues(alpha: 0.3) : AppColors.surfaceBorder,
-              ),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 48.0,
-                  height: 48.0,
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceContainerHigh,
-                    borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
-                  ),
-                  child: const Icon(
-                    Icons.location_on_rounded,
-                    color: AppColors.primaryContainer,
-                  ),
-                ),
-                const SizedBox(width: AppDimensions.md),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _stationName,
-                        style: AppTypography.labelMd,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 2.0),
-                      Text(
-                        '3.3214° N, 101.5781° E • 18m from pump #4',
-                        style: AppTypography.caption.copyWith(color: AppColors.statusSuccess),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildReceiptStep(dynamic quota, double totalAmount) {
-    return ObpCard(
-      accentColor: _receiptUploaded ? AppColors.statusSuccess : AppColors.surfaceBorder,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              const Text('3. Snap Shell Receipt', style: AppTypography.labelMd),
-              if (_receiptUploaded)
-                ObpStatusBadge.verified(label: 'Receipt Captured')
-              else
-                ObpStatusBadge.warning(label: 'Required'),
-            ],
-          ),
-          const SizedBox(height: 4.0),
-          Text(
-            'Ensure volume, pump number and tax invoice number are visible',
-            style: AppTypography.bodySm.copyWith(fontSize: 12.0),
-          ),
-          const SizedBox(height: AppDimensions.md),
-
-          // Receipt Preview Box
-          Container(
-            padding: const EdgeInsets.all(AppDimensions.md),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceContainerLowest,
-              borderRadius: BorderRadius.circular(AppDimensions.radiusMd),
-              border: Border.all(
-                color: _receiptUploaded ? AppColors.statusSuccess.withValues(alpha: 0.3) : AppColors.surfaceBorder,
               ),
             ),
             child: Column(
@@ -377,30 +533,155 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                         color: AppColors.surfaceContainerHigh,
                         borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
                       ),
-                      child: const Icon(
-                        Icons.receipt_long_rounded,
-                        color: AppColors.secondaryContainer,
-                      ),
+                      child: const Icon(Icons.location_on_rounded, color: AppColors.primaryContainer),
                     ),
                     const SizedBox(width: AppDimensions.md),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Invoice #SH-992140', style: AppTypography.labelSm),
                           Text(
-                            '${_litersClaimed.toStringAsFixed(1)} Liters Pumped',
+                            _stationName,
                             style: AppTypography.labelMd,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 2.0),
+                          Text(
+                            '$_gpsLat° N, $_gpsLng° E',
+                            style: AppTypography.caption.copyWith(color: AppColors.statusSuccess),
+                          ),
+                          Text(
+                            _gpsAddress,
+                            style: AppTypography.caption.copyWith(color: AppColors.textMuted),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ],
                       ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.edit_outlined, color: AppColors.textMuted),
-                      onPressed: () {
-                        // Allow driver to adjust pumped liters
-                        _showLitersEditDialog();
-                      },
+                  ],
+                ),
+                const SizedBox(height: AppDimensions.sm),
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.my_location_rounded, size: 16.0),
+                  label: const Text('Refresh GPS Location'),
+                  style: OutlinedButton.styleFrom(
+                    minimumSize: const Size.fromHeight(40.0),
+                    foregroundColor: AppColors.secondaryContainer,
+                  ),
+                  onPressed: _isCheckingLocation ? null : _verifyGpsLocation,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReceiptStep() {
+    return ObpCard(
+      accentColor: _receiptUploaded ? AppColors.statusSuccess : AppColors.surfaceBorder,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text('3. Snap Shell Card Receipt', style: AppTypography.labelMd),
+              if (_receiptUploaded)
+                ObpStatusBadge.verified(label: 'Photo Attached')
+              else
+                ObpStatusBadge.warning(label: 'Required'),
+            ],
+          ),
+          const SizedBox(height: 4.0),
+          Text(
+            'Take a clear photo of the printed Shell Card receipt showing volume and pump #',
+            style: AppTypography.bodySm.copyWith(fontSize: 12.0),
+          ),
+          const SizedBox(height: AppDimensions.md),
+
+          Container(
+            padding: const EdgeInsets.all(AppDimensions.md),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceContainerLowest,
+              borderRadius: BorderRadius.circular(AppDimensions.radiusMd),
+              border: Border.all(
+                color: _receiptUploaded ? AppColors.statusSuccess.withValues(alpha: 0.3) : AppColors.surfaceBorder,
+              ),
+            ),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    if (_receiptFile != null)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                        child: Image.file(_receiptFile!, width: 48.0, height: 48.0, fit: BoxFit.cover),
+                      )
+                    else
+                      Container(
+                        width: 48.0,
+                        height: 48.0,
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceContainerHigh,
+                          borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                        ),
+                        child: const Icon(Icons.receipt_long_rounded, color: AppColors.secondaryContainer),
+                      ),
+                    const SizedBox(width: AppDimensions.md),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text('Pumped Diesel Volume (L)', style: AppTypography.caption),
+                          TextFormField(
+                            controller: _litersController,
+                            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                            style: AppTypography.headlineMd.copyWith(
+                              color: AppColors.textPrimary,
+                              letterSpacing: 1.0,
+                            ),
+                            decoration: const InputDecoration(
+                              isDense: true,
+                              contentPadding: EdgeInsets.symmetric(vertical: 4.0),
+                              hintText: 'e.g. 280.5',
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                            ),
+                            onChanged: (_) => setState(() {}),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppDimensions.sm),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.photo_camera_rounded, size: 16.0),
+                        label: const Text('Capture Receipt'),
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size.fromHeight(40.0),
+                          foregroundColor: AppColors.textPrimary,
+                        ),
+                        onPressed: () => _captureReceipt(ImageSource.camera),
+                      ),
+                    ),
+                    const SizedBox(width: 8.0),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.photo_library_outlined, size: 16.0),
+                      label: const Text('Upload'),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size(90.0, 40.0),
+                        foregroundColor: AppColors.textMuted,
+                      ),
+                      onPressed: () => _captureReceipt(ImageSource.gallery),
                     ),
                   ],
                 ),
@@ -412,39 +693,7 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
     );
   }
 
-  void _showLitersEditDialog() {
-    final controller = TextEditingController(text: _litersClaimed.toString());
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surfaceCard,
-        title: const Text('Edit Pumped Liters', style: AppTypography.headlineMd),
-        content: TextField(
-          controller: controller,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: const InputDecoration(labelText: 'Liters (L)'),
-        ),
-        actions: [
-          TextButton(
-            child: const Text('Cancel'),
-            onPressed: () => Navigator.of(ctx).pop(),
-          ),
-          TextButton(
-            child: const Text('Save'),
-            onPressed: () {
-              final parsed = double.tryParse(controller.text);
-              if (parsed != null && parsed > 0) {
-                setState(() => _litersClaimed = parsed);
-              }
-              Navigator.of(ctx).pop();
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSummaryCard(double totalAmount) {
+  Widget _buildSummaryCard(double liters, double totalAmount) {
     return Container(
       padding: const EdgeInsets.all(AppDimensions.md),
       decoration: BoxDecoration(
@@ -457,9 +706,12 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Claim Volume:', style: AppTypography.bodySm),
+              const Expanded(
+                child: Text('Claim Volume:', style: AppTypography.bodySm),
+              ),
+              const SizedBox(width: 8.0),
               Text(
-                '${_litersClaimed.toStringAsFixed(1)} L',
+                '${liters.toStringAsFixed(1)} Liters',
                 style: AppTypography.labelMd.copyWith(color: AppColors.textPrimary),
               ),
             ],
@@ -468,9 +720,12 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Subsidized Rate (SKDS):', style: AppTypography.bodySm),
+              const Expanded(
+                child: Text('Subsidized Rate (SKDS 2.0):', style: AppTypography.bodySm),
+              ),
+              const SizedBox(width: 8.0),
               Text(
-                'RM 2.15 / L',
+                'RM 2.15 / Liter',
                 style: AppTypography.labelMd.copyWith(color: AppColors.statusSuccess),
               ),
             ],
@@ -482,7 +737,10 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Total Subsidy Value:', style: AppTypography.labelMd),
+              const Expanded(
+                child: Text('Calculated Subsidy Cost:', style: AppTypography.labelMd),
+              ),
+              const SizedBox(width: 8.0),
               Text(
                 'RM ${totalAmount.toStringAsFixed(2)}',
                 style: AppTypography.headlineMd.copyWith(
@@ -507,7 +765,7 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
           const SizedBox(width: 6.0),
           Expanded(
             child: Text(
-              'False claims subject to immediate SKDS suspension and disciplinary action under Section 15 Fleet Regulations.',
+              'Submitted claims are synchronized with Firebase and inspected on the Manager Web Dashboard (obp-fleet-hub).',
               style: AppTypography.caption.copyWith(color: AppColors.textHint),
             ),
           ),

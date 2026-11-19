@@ -4,6 +4,7 @@ import '../../core/constants/app_dimensions.dart';
 import '../../core/constants/app_typography.dart';
 import '../../core/router/app_routes.dart';
 import '../../core/state/app_state.dart';
+import '../../services/auth_service.dart';
 import '../../widgets/obp_button.dart';
 import '../../widgets/obp_card.dart';
 import '../../widgets/obp_pulse_dot.dart';
@@ -33,13 +34,66 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
-    await Future.delayed(const Duration(milliseconds: 650));
-    if (!mounted) return;
 
-    final appState = AppStateScope.of(context);
-    appState.login(_usernameController.text.trim(), _passwordController.text.trim());
+    try {
+      final appState = AppStateScope.of(context);
+      await appState.login(
+        _usernameController.text.trim(),
+        _passwordController.text.trim(),
+      );
 
-    Navigator.of(context).pushReplacementNamed(AppRoutes.shell);
+      if (!mounted) return;
+      Navigator.of(context).pushReplacementNamed(AppRoutes.shell);
+    } on UnauthorizedRoleException catch (e) {
+      if (!mounted) return;
+      _showRoleDeniedDialog(e.message);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Login failed: ${e.toString()}'),
+          backgroundColor: AppColors.statusError,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
+
+  void _showRoleDeniedDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surfaceCard,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppDimensions.radiusLg),
+          side: const BorderSide(color: AppColors.surfaceBorder),
+        ),
+        icon: Container(
+          width: 52.0,
+          height: 52.0,
+          decoration: BoxDecoration(
+            color: AppColors.statusError.withValues(alpha: 0.15),
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(Icons.block_rounded, color: AppColors.statusError, size: 30.0),
+        ),
+        title: const Text('Driver Cabin Access Only', style: AppTypography.headlineMd),
+        content: Text(
+          message,
+          style: AppTypography.bodyMd,
+          textAlign: TextAlign.center,
+        ),
+        actions: [
+          ObpButton(
+            label: 'Understood',
+            onPressed: () => Navigator.of(ctx).pop(),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -51,14 +105,14 @@ class _LoginScreenState extends State<LoginScreen> {
           child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(
               horizontal: AppDimensions.screenMargin,
-              vertical: AppDimensions.lg,
+              vertical: AppDimensions.md,
             ),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 420.0),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // Brand Header with official OBP logo
+                  // Brand Header with official OBP logo slot
                   _buildBrandHeader(),
                   const SizedBox(height: AppDimensions.md),
 
@@ -66,7 +120,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   _buildStatusTag(),
                   const SizedBox(height: AppDimensions.lg),
 
-                  // Main Login Card (Username, Password, Login button only)
+                  // Main Login Card (Username, Password, Login button only - NO assign lorry)
                   _buildLoginCard(),
                   const SizedBox(height: AppDimensions.lg),
 
@@ -84,49 +138,53 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _buildBrandHeader() {
     return Column(
       children: [
-        // Official OBP Logo container with overflow-safe styling
+        // Official OBP Logo slot (assets/images/obp_logo.png or assets/obp.png)
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
+          constraints: const BoxConstraints(maxWidth: 260.0),
+          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 10.0),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(AppDimensions.radiusLg),
             boxShadow: [
               BoxShadow(
                 color: Colors.black.withValues(alpha: 0.25),
-                blurRadius: 12.0,
-                offset: const Offset(0, 4),
+                blurRadius: 10.0,
+                offset: const Offset(0, 3),
               ),
             ],
           ),
-          child: Image.asset(
-            'assets/obp.png',
-            height: 60.0,
-            fit: BoxFit.contain,
-            errorBuilder: (context, error, stackTrace) => Container(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(AppDimensions.radiusMd),
+            child: Image.asset(
+              'assets/images/obp_logo.png',
               height: 56.0,
-              padding: const EdgeInsets.symmetric(horizontal: 16.0),
-              decoration: BoxDecoration(
-                color: AppColors.primaryContainer.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(AppDimensions.radiusMd),
-              ),
-              alignment: Alignment.center,
-              child: const FittedBox(
-                fit: BoxFit.scaleDown,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.local_shipping_rounded, color: AppColors.primaryContainer),
-                    SizedBox(width: 8.0),
-                    Text(
-                      'OBP LOGISTICS',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w900,
-                        color: AppColors.primaryContainer,
-                        letterSpacing: 1.2,
-                      ),
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) => Image.asset(
+                'assets/obp.png',
+                height: 56.0,
+                fit: BoxFit.contain,
+                errorBuilder: (context, error2, stackTrace2) => Container(
+                  height: 56.0,
+                  alignment: Alignment.center,
+                  child: const FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.local_shipping_rounded, color: AppColors.primaryContainer),
+                        SizedBox(width: 8.0),
+                        Text(
+                          'OBP LOGISTICS',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w900,
+                            color: AppColors.primaryContainer,
+                            letterSpacing: 1.2,
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -179,19 +237,20 @@ class _LoginScreenState extends State<LoginScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Username Label
-            const Text('Username', style: AppTypography.labelMd),
+            // Username / Email Label
+            const Text('Email or Driver ID', style: AppTypography.labelMd),
             const SizedBox(height: AppDimensions.sm),
             TextFormField(
               controller: _usernameController,
+              keyboardType: TextInputType.emailAddress,
               style: AppTypography.bodyMd.copyWith(color: AppColors.textPrimary),
               decoration: const InputDecoration(
-                hintText: 'Enter username (e.g. DRV-8821)',
+                hintText: 'e.g. DRV-8821 or driver@obp.com.my',
                 prefixIcon: Icon(Icons.person_outline_rounded, color: AppColors.textMuted),
               ),
               validator: (val) {
                 if (val == null || val.trim().isEmpty) {
-                  return 'Please enter your username';
+                  return 'Please enter your Driver ID or Email';
                 }
                 return null;
               },
@@ -210,7 +269,9 @@ class _LoginScreenState extends State<LoginScreen> {
                 prefixIcon: const Icon(Icons.lock_outline_rounded, color: AppColors.textMuted),
                 suffixIcon: IconButton(
                   icon: Icon(
-                    _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                    _obscurePassword
+                        ? Icons.visibility_outlined
+                        : Icons.visibility_off_outlined,
                     color: AppColors.textMuted,
                   ),
                   onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
@@ -227,7 +288,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
             // Submit Button
             ObpButton(
-              label: 'Login',
+              label: 'Login to Cabin',
               icon: Icons.login_rounded,
               isLoading: _isLoading,
               onPressed: _handleLogin,

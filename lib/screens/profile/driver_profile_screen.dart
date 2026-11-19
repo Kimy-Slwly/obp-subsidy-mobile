@@ -5,6 +5,7 @@ import '../../core/constants/app_typography.dart';
 import '../../core/router/app_routes.dart';
 import '../../core/state/app_state.dart';
 import '../../models/driver_model.dart';
+import '../../models/vehicle_model.dart';
 import '../../widgets/obp_button.dart';
 import '../../widgets/obp_card.dart';
 import '../../widgets/obp_pulse_dot.dart';
@@ -17,6 +18,7 @@ class DriverProfileScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final appState = AppStateScope.of(context);
     final driver = appState.driver;
+    final vehicle = appState.assignedVehicle;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -33,7 +35,7 @@ class DriverProfileScreen extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Driver Identity Spotlight Card
-              _buildIdentityCard(driver),
+              _buildIdentityCard(driver, vehicle),
               const SizedBox(height: AppDimensions.md),
 
               // Key Metrics Row
@@ -43,7 +45,7 @@ class DriverProfileScreen extends StatelessWidget {
               // Section 1: Fleet & Vehicle Specifics
               _buildSectionHeader('Fleet & Vehicle Details'),
               const SizedBox(height: AppDimensions.sm),
-              _buildVehicleDetailsCard(driver),
+              _buildVehicleDetailsCard(driver, vehicle),
               const SizedBox(height: AppDimensions.lg),
 
               // Section 2: Driver Certifications & Compliance
@@ -72,7 +74,7 @@ class DriverProfileScreen extends StatelessWidget {
                 child: Column(
                   children: [
                     Text(
-                      'OBP Driver Hub v2.4.1 (Build 829)',
+                      'OBP Driver Hub v2.4.1 (Firebase Production)',
                       style: AppTypography.caption.copyWith(color: AppColors.textHint),
                     ),
                     const SizedBox(height: 2.0),
@@ -102,7 +104,7 @@ class DriverProfileScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildIdentityCard(DriverModel driver) {
+  Widget _buildIdentityCard(DriverModel driver, VehicleModel vehicle) {
     return ObpCard(
       accentColor: AppColors.primaryContainer,
       padding: const EdgeInsets.all(AppDimensions.lg),
@@ -150,10 +152,11 @@ class DriverProfileScreen extends StatelessWidget {
                       style: AppTypography.bodySm.copyWith(color: AppColors.textMuted),
                     ),
                     const SizedBox(height: 6.0),
-                    Row(
+                    Wrap(
+                      spacing: 6.0,
+                      runSpacing: 4.0,
                       children: [
-                        ObpStatusBadge.neutral(label: driver.lorryPlate, icon: Icons.local_shipping_outlined),
-                        const SizedBox(width: 6.0),
+                        ObpStatusBadge.neutral(label: vehicle.plateNumber, icon: Icons.local_shipping_outlined),
                         ObpStatusBadge.verified(label: 'Active Shift'),
                       ],
                     ),
@@ -214,17 +217,19 @@ class DriverProfileScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildVehicleDetailsCard(DriverModel driver) {
+  Widget _buildVehicleDetailsCard(DriverModel driver, VehicleModel vehicle) {
     return ObpCard(
       child: Column(
         children: [
-          _buildInfoRow('Assigned Lorry', driver.lorryPlate, isHighlight: true),
+          _buildInfoRow('Assigned Lorry', vehicle.plateNumber, isHighlight: true),
           const Divider(height: 18.0),
-          _buildInfoRow('Vehicle Model', driver.lorryModel),
+          _buildInfoRow('Vehicle Model', vehicle.model),
+          const Divider(height: 18.0),
+          _buildInfoRow('Monthly SKDS Quota', '${vehicle.monthlyQuotaLimit.toStringAsFixed(0)} Liters'),
           const Divider(height: 18.0),
           _buildInfoRow('Operating Company', driver.company),
           const Divider(height: 18.0),
-          _buildInfoRow('Base Depot', driver.depot),
+          _buildInfoRow('Base Depot', vehicle.depot),
           const Divider(height: 18.0),
           _buildInfoRow('Fuel Tank Capacity', '450 Liters (Dual Tanks)'),
         ],
@@ -236,11 +241,23 @@ class DriverProfileScreen extends StatelessWidget {
     return ObpCard(
       child: Column(
         children: [
-          _buildInfoRow('GDL License (Class E)', '${driver.gdlLicenseNo} (Exp: ${driver.gdlExpiry})'),
+          _buildInfoRow(
+            'GDL License (Class E)',
+            driver.gdlLicenseNo,
+            subValue: 'Exp: ${driver.gdlExpiry}',
+          ),
           const Divider(height: 18.0),
-          _buildInfoRow('Hazmat Dangerous Goods', '${driver.hazmatCertNo} (Exp: ${driver.hazmatExpiry})'),
+          _buildInfoRow(
+            'Hazmat Dangerous Goods',
+            driver.hazmatCertNo,
+            subValue: 'Exp: ${driver.hazmatExpiry}',
+          ),
           const Divider(height: 18.0),
-          _buildInfoRow('Subsidy Card ID', driver.subsidyCardId, isHighlight: true),
+          _buildInfoRow(
+            'Subsidy Card ID',
+            driver.subsidyCardId,
+            isHighlight: true,
+          ),
         ],
       ),
     );
@@ -278,14 +295,18 @@ class DriverProfileScreen extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('App Language', style: AppTypography.bodyMd),
-                    Text('Choose interface language', style: AppTypography.caption),
-                  ],
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('App Language', style: AppTypography.bodyMd),
+                      Text('Choose interface language', style: AppTypography.caption),
+                    ],
+                  ),
                 ),
+                const SizedBox(width: 12.0),
                 Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: ['EN', 'BM'].map((lang) {
                     final isSel = driver.language == lang;
                     return Padding(
@@ -326,16 +347,52 @@ class DriverProfileScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildInfoRow(String label, String value, {bool isHighlight = false}) {
+  Widget _buildInfoRow(
+    String label,
+    String value, {
+    String? subValue,
+    bool isHighlight = false,
+  }) {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: AppTypography.bodySm),
-        Text(
-          value,
-          style: AppTypography.labelMd.copyWith(
-            color: isHighlight ? AppColors.secondaryContainer : AppColors.textPrimary,
-            fontWeight: isHighlight ? FontWeight.w700 : FontWeight.w600,
+        Expanded(
+          flex: 2,
+          child: Text(
+            label,
+            style: AppTypography.bodySm.copyWith(color: AppColors.textMuted),
+            softWrap: true,
+          ),
+        ),
+        const SizedBox(width: 12.0),
+        Expanded(
+          flex: 3,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                value,
+                textAlign: TextAlign.end,
+                softWrap: true,
+                style: AppTypography.labelMd.copyWith(
+                  color: isHighlight ? AppColors.secondaryContainer : AppColors.textPrimary,
+                  fontWeight: isHighlight ? FontWeight.w700 : FontWeight.w600,
+                ),
+              ),
+              if (subValue != null && subValue.isNotEmpty) ...[
+                const SizedBox(height: 2.0),
+                Text(
+                  subValue,
+                  textAlign: TextAlign.end,
+                  softWrap: true,
+                  style: AppTypography.caption.copyWith(
+                    color: AppColors.textHint,
+                    fontSize: 11.0,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       ],
@@ -366,13 +423,15 @@ class DriverProfileScreen extends StatelessWidget {
               backgroundColor: AppColors.primaryContainer,
               foregroundColor: Colors.white,
             ),
-            onPressed: () {
+            onPressed: () async {
               Navigator.of(ctx).pop();
-              appState.logout();
-              Navigator.of(context).pushNamedAndRemoveUntil(
-                AppRoutes.login,
-                (route) => false,
-              );
+              await appState.logout();
+              if (context.mounted) {
+                Navigator.of(context).pushNamedAndRemoveUntil(
+                  AppRoutes.login,
+                  (route) => false,
+                );
+              }
             },
             child: const Text('Log Out'),
           ),
