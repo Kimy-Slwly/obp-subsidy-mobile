@@ -138,6 +138,17 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<int> getLastApprovedOdometer({String? vehicleId}) async {
+    return await _claimService.getLastApprovedOdometer(
+      vehicleId: vehicleId ?? _assignedVehicle.id,
+      fallbackOdometer: _assignedVehicle.currentOdometer,
+    );
+  }
+
+  Future<bool> checkIsDuplicateImageHash(String imageHash) async {
+    return await _claimService.checkIsDuplicateImageHash(imageHash);
+  }
+
   Future<void> submitNewClaim({
     required String stationName,
     required double liters,
@@ -147,6 +158,14 @@ class AppState extends ChangeNotifier {
     double? gpsLatitude,
     double? gpsLongitude,
     String? gpsAddress,
+    int? previousOdometer,
+    int? distanceTravelled,
+    double? kmPerLitre,
+    double? ocrConfidence,
+    String captureSource = 'live_camera',
+    String? imageHash,
+    bool isAnomaly = false,
+    String? anomalyReason,
   }) async {
     final claim = await _claimService.submitClaim(
       driverId: _user.uid,
@@ -162,6 +181,14 @@ class AppState extends ChangeNotifier {
       gpsLatitude: gpsLatitude,
       gpsLongitude: gpsLongitude,
       gpsAddress: gpsAddress,
+      previousOdometer: previousOdometer,
+      distanceTravelled: distanceTravelled,
+      kmPerLitre: kmPerLitre,
+      ocrConfidence: ocrConfidence,
+      captureSource: captureSource,
+      imageHash: imageHash,
+      isAnomaly: isAnomaly,
+      anomalyReason: anomalyReason,
     );
 
     // Optimistic local update

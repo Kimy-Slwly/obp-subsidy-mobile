@@ -1,10 +1,12 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_dimensions.dart';
 import '../../core/constants/app_typography.dart';
 import '../../core/state/app_state.dart';
+import '../../services/image_watermark_service.dart';
 import '../../services/location_service.dart';
 import '../../services/ocr_service.dart';
 import '../../widgets/obp_button.dart';
@@ -21,21 +23,24 @@ class NewFuelClaimScreen extends StatefulWidget {
 class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
   final ImagePicker _picker = ImagePicker();
 
-  // Step 1: Odometer OCR
+  // Step 1: Odometer OCR & Anti-Spoofing Audit
   File? _odometerFile;
   final TextEditingController _odometerController = TextEditingController(text: '248930');
   bool _isScanningOdo = false;
-  double _ocrConfidence = 0.994;
-  bool _odometerScanned = true;
+  double _ocrConfidence = 0.0;
+  bool _odometerScanned = false;
+  String _captureSource = 'live_camera';
+  String? _imageHash;
+  int? _lastApprovedOdometer;
 
   // Step 2: Location
-  bool _isCheckingLocation = false;
+  bool _isRefreshingGps = false;
   LocationVerificationResult? _locationResult;
-  bool _locationVerified = true;
-  String _stationName = 'Shell Rawang R&R (Northbound)';
-  double _gpsLat = 3.3214;
-  double _gpsLng = 101.5781;
-  String _gpsAddress = 'KM 433, Lebuhraya Utara-Selatan, 48000 Rawang';
+  bool _locationVerified = false;
+  String _stationName = 'Location Not Verified';
+  double? _gpsLat;
+  double? _gpsLng;
+  String _gpsAddress = 'Tap "Refresh GPS Location" to verify nearby Shell station';
 
   // Step 3: Receipt Photo & Pump Details
   File? _receiptFile;
@@ -47,7 +52,22 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
   @override
   void initState() {
     super.initState();
-    _initDefaultLocation();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _verifyGpsLocation();
+      _loadLastApprovedOdometer();
+    });
+  }
+
+  Future<void> _loadLastApprovedOdometer() async {
+    try {
+      final appState = AppStateScope.of(context);
+      final odo = await appState.getLastApprovedOdometer();
+      if (mounted) {
+        setState(() => _lastApprovedOdometer = odo);
+      }
+    } catch (e) {
+      debugPrint('[NewFuelClaimScreen] Error preloading approved odometer: $e');
+    }
   }
 
   @override
@@ -57,65 +77,119 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
     super.dispose();
   }
 
-  void _initDefaultLocation() {
-    _locationResult = const LocationVerificationResult(
-      latitude: 3.3214,
-      longitude: 101.5781,
-      stationName: 'Shell Rawang R&R (Northbound)',
-      address: 'KM 433, Lebuhraya Utara-Selatan, 48000 Rawang',
-      distanceMeters: 18.0,
-      isInsideGeofence: true,
-      isSuccess: true,
-    );
-  }
+  Future<void> _captureOdometer(ImageSource source, {bool isDevTest = false}) async {
+    if (_isScanningOdo || _isRefreshingGps) return;
 
-  Future<void> _captureOdometer(ImageSource source) async {
+    // Strict security check: In release builds, only live camera is allowed
+    if (!kDebugMode && source != ImageSource.camera) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Security Notice: Only live camera capture is permitted for odometer verification.'),
+          backgroundColor: AppColors.statusError,
+        ),
+      );
+      return;
+    }
+
     try {
       final picked = await _picker.pickImage(
         source: source,
-        imageQuality: 85,
-        maxWidth: 1600,
+        imageQuality: 80, // Optimized to prevent high heap and ANR
+        maxWidth: 1280,   // Resized for fast ML Kit processing
       );
 
       if (picked == null) return;
 
       setState(() {
         _isScanningOdo = true;
-        _odometerFile = File(picked.path);
+        _captureSource = isDevTest ? 'dev_gallery_test' : 'live_camera';
       });
 
-      // Execute on-device ML Kit OCR
-      final result = await OcrService.extractOdometerMileage(picked.path);
+      final originalFile = File(picked.path);
+
+      // 1. Execute on-device ML Kit OCR
+      final ocrResult = await OcrService.extractOdometerMileage(picked.path);
+
+      // 2. Automatically burn tamper-evident watermark and compute SHA-256 hash
+      final appState = AppStateScope.of(context);
+      final vehiclePlate = appState.assignedVehicle.plateNumber;
+
+      final watermarkRes = await ImageWatermarkService.applyWatermark(
+        originalImage: originalFile,
+        plateNumber: vehiclePlate,
+        latitude: _gpsLat,
+        longitude: _gpsLng,
+        timestamp: DateTime.now(),
+      );
+
+      // 3. Pre-check for duplicate image hash in Firestore
+      final isDuplicate = await appState.checkIsDuplicateImageHash(watermarkRes.imageHash);
+      if (isDuplicate) {
+        if (!mounted) return;
+        setState(() {
+          _isScanningOdo = false;
+        });
+        showDialog(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.surfaceCard,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(AppDimensions.radiusLg),
+              side: const BorderSide(color: AppColors.statusError),
+            ),
+            icon: const Icon(Icons.security_update_warning_rounded, color: AppColors.statusError, size: 40.0),
+            title: const Text('Duplicate Photo Rejected', style: AppTypography.headlineMd),
+            content: const Text(
+              'Anti-spoofing alert: This exact dashboard photo has already been submitted in a prior claim. Live dashboard photo capture is strictly required.',
+              style: AppTypography.bodyMd,
+            ),
+            actions: [
+              ObpButton(
+                label: 'Understood',
+                onPressed: () => Navigator.of(ctx).pop(),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
 
       if (!mounted) return;
 
       setState(() {
-        _isScanningOdo = false;
-        if (result.isSuccess && result.mileageKm != null) {
-          _odometerController.text = result.mileageKm.toString();
-          _ocrConfidence = result.confidence;
+        _odometerFile = watermarkRes.watermarkedFile;
+        _imageHash = watermarkRes.imageHash;
+
+        if (ocrResult.isSuccess && ocrResult.mileageKm != null) {
+          _odometerController.text = ocrResult.mileageKm.toString();
+          _ocrConfidence = ocrResult.confidence;
           _odometerScanned = true;
         } else {
           _odometerScanned = true;
-          // Keep manual edit field available
+          _ocrConfidence = ocrResult.confidence;
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
-              content: Text('Dashboard image captured. Please verify or edit the mileage reading below.'),
+              content: Text('Dashboard image watermarked. Please verify the mileage reading below.'),
             ),
           );
         }
       });
     } catch (e) {
       if (!mounted) return;
-      setState(() => _isScanningOdo = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Camera error: $e')),
+        SnackBar(content: Text('Camera capture error: $e')),
       );
+    } finally {
+      if (mounted) {
+        setState(() => _isScanningOdo = false);
+      }
     }
   }
 
   Future<void> _verifyGpsLocation() async {
-    setState(() => _isCheckingLocation = true);
+    if (_isRefreshingGps || _isScanningOdo) return;
+
+    setState(() => _isRefreshingGps = true);
 
     try {
       final res = await LocationService.getCurrentVerification();
@@ -128,29 +202,48 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
         _gpsLng = res.longitude;
         _gpsAddress = res.address;
         _locationVerified = res.isInsideGeofence;
-        _isCheckingLocation = false;
       });
 
+      if (res.isSuccess) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(res.isInsideGeofence
+                ? 'Geofence Match: ${res.stationName} (${res.distanceMeters.toStringAsFixed(0)}m away)'
+                : 'Notice: Outside Shell station perimeter. Address: ${res.address}'),
+            backgroundColor: res.isInsideGeofence ? AppColors.statusSuccess : AppColors.statusWarning,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(res.statusMessage ?? 'GPS lock unavailable. Please check location permissions.'),
+            backgroundColor: AppColors.statusWarning,
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint('[NewFuelClaimScreen] Error refreshing GPS: $e');
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(res.isInsideGeofence
-              ? 'GPS Geofence Match: ${res.stationName} (${res.distanceMeters.toStringAsFixed(0)}m)'
-              : 'Warning: Outside station perimeter (${res.distanceMeters.toStringAsFixed(0)}m away)'),
-          backgroundColor: res.isInsideGeofence ? AppColors.statusSuccess : AppColors.statusWarning,
+          content: Text('GPS verification error: $e'),
+          backgroundColor: AppColors.statusError,
         ),
       );
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isCheckingLocation = false);
+    } finally {
+      if (mounted) {
+        setState(() => _isRefreshingGps = false);
+      }
     }
   }
 
   Future<void> _captureReceipt(ImageSource source) async {
+    if (_isRefreshingGps || _isScanningOdo) return;
     try {
       final picked = await _picker.pickImage(
         source: source,
-        imageQuality: 85,
-        maxWidth: 1600,
+        imageQuality: 80,
+        maxWidth: 1280,
       );
 
       if (picked == null) return;
@@ -184,11 +277,80 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
       return;
     }
 
+    final appState = AppStateScope.of(context);
+
+    // 1. Fetch latest approved odometer reading for sequential validation
+    final int lastApprovedOdometer = await appState.getLastApprovedOdometer();
+
+    // Hard block: newOdometer <= lastApprovedOdometer
+    if (odoKm <= lastApprovedOdometer) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.surfaceCard,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppDimensions.radiusLg),
+            side: const BorderSide(color: AppColors.statusError),
+          ),
+          icon: const Icon(Icons.block_rounded, color: AppColors.statusError, size: 40.0),
+          title: const Text('Invalid Odometer Reading', style: AppTypography.headlineMd),
+          content: Text(
+            'Odometer reading ($odoKm km) cannot be lower than or equal to the last approved reading of $lastApprovedOdometer km.\n\nPlease scan or enter the true current dashboard reading.',
+            style: AppTypography.bodyMd,
+          ),
+          actions: [
+            ObpButton(
+              label: 'Re-enter Reading',
+              onPressed: () => Navigator.of(ctx).pop(),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // 2. Sequential calculations: distance travelled and fuel efficiency
+    final int distanceTravelled = odoKm - lastApprovedOdometer;
+    final double kmPerLitre = liters > 0 ? (distanceTravelled / liters) : 0.0;
+
+    // 3. Anomaly Evaluation
+    final List<String> anomalyReasons = [];
+
+    if (distanceTravelled > 1500) {
+      anomalyReasons.add('Distance travelled ($distanceTravelled km) exceeds single-refill 1,500 km limit');
+    }
+
+    if (kmPerLitre < 2.0) {
+      anomalyReasons.add('Fuel efficiency (${kmPerLitre.toStringAsFixed(2)} KM/L) is abnormally low (< 2.0 KM/L)');
+    } else if (kmPerLitre > 8.0) {
+      anomalyReasons.add('Fuel efficiency (${kmPerLitre.toStringAsFixed(2)} KM/L) is abnormally high (> 8.0 KM/L for heavy lorry)');
+    }
+
+    if (_ocrConfidence < 0.80) {
+      anomalyReasons.add('Odometer OCR confidence (${(_ocrConfidence * 100).toStringAsFixed(1)}%) is below 80% threshold');
+    }
+
+    final bool isAnomaly = anomalyReasons.isNotEmpty;
+    final String? anomalyReason = isAnomaly ? anomalyReasons.join(' • ') : null;
+
+    // 4. Duplicate Image Hash check
+    if (_imageHash != null) {
+      final isDuplicate = await appState.checkIsDuplicateImageHash(_imageHash!);
+      if (isDuplicate) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Submission blocked: Duplicate odometer image already exists in database.'),
+            backgroundColor: AppColors.statusError,
+            duration: Duration(seconds: 4),
+          ),
+        );
+        return;
+      }
+    }
+
     setState(() => _isSubmitting = true);
 
     try {
-      final appState = AppStateScope.of(context);
-
       await appState.submitNewClaim(
         stationName: _stationName,
         liters: liters,
@@ -198,6 +360,14 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
         gpsLatitude: _gpsLat,
         gpsLongitude: _gpsLng,
         gpsAddress: _gpsAddress,
+        previousOdometer: lastApprovedOdometer,
+        distanceTravelled: distanceTravelled,
+        kmPerLitre: kmPerLitre,
+        ocrConfidence: _ocrConfidence,
+        captureSource: _captureSource,
+        imageHash: _imageHash,
+        isAnomaly: isAnomaly,
+        anomalyReason: anomalyReason,
       );
 
       if (!mounted) return;
@@ -210,27 +380,56 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
           backgroundColor: AppColors.surfaceCard,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppDimensions.radiusLg),
-            side: const BorderSide(color: AppColors.surfaceBorder),
+            side: BorderSide(color: isAnomaly ? AppColors.statusWarning : AppColors.surfaceBorder),
           ),
           icon: Container(
             width: 56.0,
             height: 56.0,
-            decoration: const BoxDecoration(
-              color: Color(0x2210B981),
+            decoration: BoxDecoration(
+              color: isAnomaly ? const Color(0x22F59E0B) : const Color(0x2210B981),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.check_circle_rounded, color: AppColors.statusSuccess, size: 36.0),
+            child: Icon(
+              isAnomaly ? Icons.warning_amber_rounded : Icons.check_circle_rounded,
+              color: isAnomaly ? AppColors.statusWarning : AppColors.statusSuccess,
+              size: 36.0,
+            ),
           ),
-          title: const Text('Claim Logged & Stored', style: AppTypography.headlineMd),
+          title: Text(isAnomaly ? 'Claim Submitted (Under Audit)' : 'Claim Logged & Stored', style: AppTypography.headlineMd),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                'Your claim for ${liters.toStringAsFixed(1)} L at $_stationName has been cryptographically uploaded to Firebase Storage and submitted to Cloud Firestore.',
+                'Your claim for ${liters.toStringAsFixed(1)} L at $_stationName ($odoKm km) has been secured with tamper-proof watermark and submitted to Cloud Firestore.',
                 style: AppTypography.bodyMd,
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: AppDimensions.sm),
+              if (isAnomaly) ...[
+                Container(
+                  padding: const EdgeInsets.all(8.0),
+                  decoration: BoxDecoration(
+                    color: AppColors.statusWarning.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
+                    border: Border.all(color: AppColors.statusWarning.withValues(alpha: 0.3)),
+                  ),
+                  child: Column(
+                    children: [
+                      const Text(
+                        'Audit Flag Raised:',
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12.0, color: AppColors.statusWarning),
+                      ),
+                      const SizedBox(height: 2.0),
+                      Text(
+                        anomalyReason ?? '',
+                        style: AppTypography.caption.copyWith(color: AppColors.statusWarning),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: AppDimensions.sm),
+              ],
               Container(
                 padding: const EdgeInsets.all(8.0),
                 decoration: BoxDecoration(
@@ -238,8 +437,12 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                   borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
                 ),
                 child: Text(
-                  'Pending Logistics Manager Review in Web Dashboard',
-                  style: AppTypography.caption.copyWith(color: AppColors.secondaryContainer),
+                  isAnomaly
+                      ? 'Flagged for Special Logistics Audit in Web Dashboard'
+                      : 'Pending Logistics Manager Review in Web Dashboard',
+                  style: AppTypography.caption.copyWith(
+                    color: isAnomaly ? AppColors.statusWarning : AppColors.secondaryContainer,
+                  ),
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -317,7 +520,7 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                 label: 'Submit Claim to Manager',
                 icon: Icons.cloud_upload_rounded,
                 isLoading: _isSubmitting,
-                onPressed: _handleSubmit,
+                onPressed: (_isSubmitting || _isRefreshingGps || _isScanningOdo) ? null : _handleSubmit,
               ),
               const SizedBox(height: AppDimensions.md),
               _buildLegalDisclaimer(),
@@ -381,10 +584,10 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                   height: 16.0,
                   child: CircularProgressIndicator(strokeWidth: 2.0, color: AppColors.secondaryContainer),
                 )
-              else if (_odometerScanned)
+              else if (_odometerScanned && _odometerFile != null)
                 ObpStatusBadge.verified(label: '${(_ocrConfidence * 100).toStringAsFixed(1)}% OCR')
               else
-                ObpStatusBadge.warning(label: 'Required'),
+                ObpStatusBadge.warning(label: 'Pending Scan'),
             ],
           ),
           const SizedBox(height: 4.0),
@@ -456,26 +659,62 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                     Expanded(
                       child: OutlinedButton.icon(
                         icon: const Icon(Icons.photo_camera_rounded, size: 16.0),
-                        label: const Text('Open Camera'),
+                        label: const Text('Live Camera', maxLines: 1, overflow: TextOverflow.ellipsis),
                         style: OutlinedButton.styleFrom(
                           minimumSize: const Size.fromHeight(40.0),
                           foregroundColor: AppColors.textPrimary,
                         ),
-                        onPressed: () => _captureOdometer(ImageSource.camera),
+                        onPressed: (_isScanningOdo || _isRefreshingGps)
+                            ? null
+                            : () => _captureOdometer(ImageSource.camera),
                       ),
                     ),
-                    const SizedBox(width: 8.0),
-                    OutlinedButton.icon(
-                      icon: const Icon(Icons.photo_library_outlined, size: 16.0),
-                      label: const Text('Gallery'),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size(90.0, 40.0),
-                        foregroundColor: AppColors.textMuted,
+                    if (kDebugMode) ...[
+                      const SizedBox(width: 8.0),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.developer_mode, size: 14.0),
+                        label: const Text('Dev: Test Image', maxLines: 1),
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size(120.0, 40.0),
+                          foregroundColor: AppColors.secondaryContainer,
+                          side: const BorderSide(color: AppColors.secondaryContainer),
+                        ),
+                        onPressed: (_isScanningOdo || _isRefreshingGps)
+                            ? null
+                            : () => _captureOdometer(ImageSource.gallery, isDevTest: true),
                       ),
-                      onPressed: () => _captureOdometer(ImageSource.gallery),
-                    ),
+                    ],
                   ],
                 ),
+                if (_lastApprovedOdometer != null) ...[
+                  const SizedBox(height: 6.0),
+                  Row(
+                    children: [
+                      const Icon(Icons.history_rounded, size: 13.0, color: AppColors.textMuted),
+                      const SizedBox(width: 4.0),
+                      Text(
+                        'Last approved: $_lastApprovedOdometer km',
+                        style: AppTypography.caption.copyWith(color: AppColors.textMuted),
+                      ),
+                    ],
+                  ),
+                ],
+                if (_imageHash != null) ...[
+                  const SizedBox(height: 4.0),
+                  Row(
+                    children: [
+                      const Icon(Icons.verified_user_rounded, size: 13.0, color: AppColors.secondaryContainer),
+                      const SizedBox(width: 4.0),
+                      Expanded(
+                        child: Text(
+                          'Watermarked SHA-256: ${_imageHash!.substring(0, 16)}...',
+                          style: AppTypography.caption.copyWith(color: AppColors.secondaryContainer),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),
@@ -494,21 +733,28 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text('2. Verify Petrol Station Location', style: AppTypography.labelMd),
-              if (_isCheckingLocation)
-                const SizedBox(
-                  width: 16.0,
-                  height: 16.0,
-                  child: CircularProgressIndicator(strokeWidth: 2.0, color: AppColors.secondaryContainer),
+              if (_isRefreshingGps)
+                const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: 14.0,
+                      height: 14.0,
+                      child: CircularProgressIndicator(strokeWidth: 2.0, color: AppColors.secondaryContainer),
+                    ),
+                    SizedBox(width: 6.0),
+                    Text('Acquiring...', style: AppTypography.caption),
+                  ],
                 )
               else if (_locationVerified)
                 ObpStatusBadge.verified(label: 'Geofence Match')
               else
-                ObpStatusBadge.warning(label: 'Unverified'),
+                ObpStatusBadge.warning(label: _locationResult == null ? 'Not Verified' : 'Unverified'),
             ],
           ),
           const SizedBox(height: 4.0),
           Text(
-            'Native GPS check verified against authorized Shell station coordinates',
+            'Live GPS check verified against nearby Shell petrol stations',
             style: AppTypography.bodySm.copyWith(fontSize: 12.0),
           ),
           const SizedBox(height: AppDimensions.md),
@@ -518,9 +764,6 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
             decoration: BoxDecoration(
               color: AppColors.surfaceContainerLowest,
               borderRadius: BorderRadius.circular(AppDimensions.radiusMd),
-              border: Border.all(
-                color: _locationVerified ? AppColors.statusSuccess.withValues(alpha: 0.3) : AppColors.surfaceBorder,
-              ),
             ),
             child: Column(
               children: [
@@ -530,10 +773,15 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                       width: 48.0,
                       height: 48.0,
                       decoration: BoxDecoration(
-                        color: AppColors.surfaceContainerHigh,
+                        color: _locationVerified
+                            ? AppColors.statusSuccess.withValues(alpha: 0.15)
+                            : AppColors.surfaceContainerHigh,
                         borderRadius: BorderRadius.circular(AppDimensions.radiusSm),
                       ),
-                      child: const Icon(Icons.location_on_rounded, color: AppColors.primaryContainer),
+                      child: Icon(
+                        Icons.location_on_rounded,
+                        color: _locationVerified ? AppColors.statusSuccess : AppColors.primaryContainer,
+                      ),
                     ),
                     const SizedBox(width: AppDimensions.md),
                     Expanded(
@@ -547,14 +795,22 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                             overflow: TextOverflow.ellipsis,
                           ),
                           const SizedBox(height: 2.0),
-                          Text(
-                            '$_gpsLat° N, $_gpsLng° E',
-                            style: AppTypography.caption.copyWith(color: AppColors.statusSuccess),
-                          ),
+                          if (_gpsLat != null && _gpsLng != null && (_gpsLat != 0.0 || _gpsLng != 0.0))
+                            Text(
+                              '${_gpsLat!.toStringAsFixed(5)}° N, ${_gpsLng!.toStringAsFixed(5)}° E${_locationVerified && _locationResult != null ? ' • ${_locationResult!.distanceMeters.toStringAsFixed(0)}m' : ''}',
+                              style: AppTypography.caption.copyWith(
+                                color: _locationVerified ? AppColors.statusSuccess : AppColors.statusWarning,
+                              ),
+                            )
+                          else
+                            Text(
+                              'GPS fix not yet acquired',
+                              style: AppTypography.caption.copyWith(color: AppColors.textMuted),
+                            ),
                           Text(
                             _gpsAddress,
                             style: AppTypography.caption.copyWith(color: AppColors.textMuted),
-                            maxLines: 1,
+                            maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                           ),
                         ],
@@ -564,13 +820,19 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                 ),
                 const SizedBox(height: AppDimensions.sm),
                 OutlinedButton.icon(
-                  icon: const Icon(Icons.my_location_rounded, size: 16.0),
-                  label: const Text('Refresh GPS Location'),
+                  icon: _isRefreshingGps
+                      ? const SizedBox(
+                          width: 14.0,
+                          height: 14.0,
+                          child: CircularProgressIndicator(strokeWidth: 2.0, color: AppColors.secondaryContainer),
+                        )
+                      : const Icon(Icons.my_location_rounded, size: 16.0),
+                  label: Text(_isRefreshingGps ? 'Scanning Nearby Stations...' : 'Refresh GPS Location'),
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size.fromHeight(40.0),
                     foregroundColor: AppColors.secondaryContainer,
                   ),
-                  onPressed: _isCheckingLocation ? null : _verifyGpsLocation,
+                  onPressed: (_isRefreshingGps || _isScanningOdo) ? null : _verifyGpsLocation,
                 ),
               ],
             ),
@@ -670,7 +932,9 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                           minimumSize: const Size.fromHeight(40.0),
                           foregroundColor: AppColors.textPrimary,
                         ),
-                        onPressed: () => _captureReceipt(ImageSource.camera),
+                        onPressed: (_isScanningOdo || _isRefreshingGps)
+                            ? null
+                            : () => _captureReceipt(ImageSource.camera),
                       ),
                     ),
                     const SizedBox(width: 8.0),
@@ -681,7 +945,9 @@ class _NewFuelClaimScreenState extends State<NewFuelClaimScreen> {
                         minimumSize: const Size(90.0, 40.0),
                         foregroundColor: AppColors.textMuted,
                       ),
-                      onPressed: () => _captureReceipt(ImageSource.gallery),
+                      onPressed: (_isScanningOdo || _isRefreshingGps)
+                          ? null
+                          : () => _captureReceipt(ImageSource.gallery),
                     ),
                   ],
                 ),

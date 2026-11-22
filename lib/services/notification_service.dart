@@ -4,13 +4,17 @@ import '../models/notification_model.dart';
 import 'firebase_service.dart';
 
 class NotificationService {
-  final FirebaseFirestore? _firestore = FirebaseService.isInitialized ? FirebaseFirestore.instance : null;
+  final FirebaseFirestore? _firestore =
+      FirebaseService.isInitialized ? FirebaseFirestore.instance : null;
 
-  static final List<NotificationModel> _fallbackNotifications = List.from(NotificationModel.dummyList);
+  static final List<NotificationModel> _fallbackNotifications =
+      List.from(NotificationModel.dummyList);
 
-  Stream<List<NotificationModel>> getDriverNotificationsStream(String driverId) {
+  Stream<List<NotificationModel>> getDriverNotificationsStream(
+      String driverId) {
     if (!FirebaseService.isInitialized || _firestore == null) {
-      return Stream.value(List<NotificationModel>.unmodifiable(_fallbackNotifications));
+      return Stream.value(
+          List<NotificationModel>.unmodifiable(_fallbackNotifications));
     }
 
     return _firestore!
@@ -23,7 +27,8 @@ class NotificationService {
         return List<NotificationModel>.unmodifiable(_fallbackNotifications);
       }
       return snapshot.docs
-          .map<NotificationModel>((doc) => NotificationModel.fromMap(doc.id, doc.data()))
+          .map<NotificationModel>(
+              (doc) => NotificationModel.fromMap(doc.id, doc.data()))
           .toList();
     }).handleError((error) {
       debugPrint('[NotificationService] Error streaming notifications: $error');
@@ -33,15 +38,21 @@ class NotificationService {
   Future<void> markAsRead(String notificationId) async {
     if (FirebaseService.isInitialized && _firestore != null) {
       try {
-        await _firestore!.collection('notifications').doc(notificationId).update({'isRead': true});
+        await _firestore!
+            .collection('notifications')
+            .doc(notificationId)
+            .update({'isRead': true});
       } catch (e) {
-        debugPrint('[NotificationService] Error marking notification as read: $e');
+        debugPrint(
+            '[NotificationService] Error marking notification as read: $e');
       }
     }
 
-    final index = _fallbackNotifications.indexWhere((n) => n.id == notificationId);
+    final index =
+        _fallbackNotifications.indexWhere((n) => n.id == notificationId);
     if (index != -1) {
-      _fallbackNotifications[index] = _fallbackNotifications[index].copyWith(isRead: true);
+      _fallbackNotifications[index] =
+          _fallbackNotifications[index].copyWith(isRead: true);
     }
   }
 
@@ -65,7 +76,8 @@ class NotificationService {
     }
 
     for (int i = 0; i < _fallbackNotifications.length; i++) {
-      _fallbackNotifications[i] = _fallbackNotifications[i].copyWith(isRead: true);
+      _fallbackNotifications[i] =
+          _fallbackNotifications[i].copyWith(isRead: true);
     }
   }
 }

@@ -17,9 +17,19 @@ class OcrResult {
 }
 
 class OcrService {
+  /// Robust Odometer OCR extraction with strict resource cleanup
   static Future<OcrResult> extractOdometerMileage(String imagePath) async {
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
     try {
+      final file = File(imagePath);
+      if (!await file.exists()) {
+        debugPrint('[OcrService] Image file does not exist: $imagePath');
+        return const OcrResult(
+          rawText: 'Image file not found',
+          isSuccess: false,
+        );
+      }
+
       final inputImage = InputImage.fromFilePath(imagePath);
       final recognizedText = await recognizer.processImage(inputImage);
       final raw = recognizedText.text;
@@ -32,8 +42,9 @@ class OcrService {
       final digitOnlyRegex = RegExp(r'\b([0-9]{5,7})\b');
 
       int? detected;
+      String detectionSource = 'none';
 
-      // 1. Try formatted match first
+      // 1. Try formatted match first (e.g. "ODO 248930 km", "TOTAL 248930")
       for (final block in recognizedText.blocks) {
         final match = mileageRegex.firstMatch(block.text);
         if (match != null && match.group(1) != null) {
@@ -41,6 +52,7 @@ class OcrService {
           final val = int.tryParse(cleanDigits);
           if (val != null && val >= 1000 && val <= 2000000) {
             detected = val;
+            detectionSource = 'labeled_context';
             break;
           }
         }
@@ -54,6 +66,7 @@ class OcrService {
             final val = int.tryParse(match.group(1)!);
             if (val != null && val >= 1000 && val <= 2000000) {
               detected = val;
+              detectionSource = 'block_digits';
               break;
             }
           }
@@ -65,24 +78,57 @@ class OcrService {
         final match = digitOnlyRegex.firstMatch(raw);
         if (match != null && match.group(1) != null) {
           detected = int.tryParse(match.group(1)!);
+          detectionSource = 'raw_fallback';
         }
       }
 
-      await recognizer.close();
+      // Dynamic Confidence Calculation based on ML Kit text extraction clarity:
+      double dynamicConfidence = 0.0;
+      if (detected != null) {
+        final digitsStr = detected.toString();
+        double score = 0.55; // Base score for detecting valid numeric range
+
+        // Contextual label boost ("ODO", "KM", "TOTAL")
+        if (detectionSource == 'labeled_context' ||
+            raw.toUpperCase().contains('ODO') ||
+            raw.toUpperCase().contains('KM')) {
+          score += 0.25;
+        }
+
+        // Standard heavy commercial lorry odometer length (5 or 6 digits)
+        if (digitsStr.length >= 5 && digitsStr.length <= 6) {
+          score += 0.15;
+        }
+
+        // Signal-to-noise ratio check
+        final int digitCount = raw.replaceAll(RegExp(r'[^0-9]'), '').length;
+        final int totalLength = raw.trim().length;
+        if (totalLength > 0 && (digitCount / totalLength) >= 0.25) {
+          score += 0.04;
+        }
+
+        dynamicConfidence = score.clamp(0.40, 0.99);
+      }
 
       return OcrResult(
         mileageKm: detected,
         rawText: raw,
-        confidence: detected != null ? 0.994 : 0.0,
+        confidence: dynamicConfidence,
         isSuccess: detected != null,
       );
     } catch (e) {
       debugPrint('[OcrService] Error running ML Kit Text Recognition: $e');
-      await recognizer.close();
       return OcrResult(
         rawText: e.toString(),
         isSuccess: false,
       );
+    } finally {
+      // Ensure the native C++ TextRecognizer engine is always closed and memory freed
+      try {
+        await recognizer.close();
+      } catch (e) {
+        debugPrint('[OcrService] Error closing recognizer in finally block: $e');
+      }
     }
   }
 }

@@ -4,12 +4,51 @@ import '../../core/constants/app_dimensions.dart';
 import '../../core/constants/app_typography.dart';
 import '../../core/router/app_routes.dart';
 import '../../core/state/app_state.dart';
+import '../../services/location_service.dart';
 import '../../widgets/obp_card.dart';
 import '../../widgets/obp_pulse_dot.dart';
 import '../../widgets/obp_status_badge.dart';
 
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  NearestStationResult? _nearestStation;
+  bool _isLoadingStation = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadNearestPump();
+    });
+  }
+
+  Future<void> _loadNearestPump() async {
+    if (_isLoadingStation) return;
+    if (mounted) {
+      setState(() => _isLoadingStation = true);
+    }
+
+    try {
+      final result = await LocationService.getNearestShellStation(radiusMeters: 5000.0);
+      if (mounted) {
+        setState(() {
+          _nearestStation = result;
+          _isLoadingStation = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('[HomeScreen] Error loading nearest pump: $e');
+      if (mounted) {
+        setState(() => _isLoadingStation = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -26,7 +65,10 @@ class HomeScreen extends StatelessWidget {
           color: AppColors.primaryContainer,
           backgroundColor: AppColors.surfaceCard,
           onRefresh: () async {
-            await Future.delayed(const Duration(milliseconds: 500));
+            await Future.wait([
+              _loadNearestPump(),
+              Future.delayed(const Duration(milliseconds: 500)),
+            ]);
           },
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -498,22 +540,41 @@ class HomeScreen extends StatelessWidget {
                       ),
                       child: const Icon(Icons.near_me_rounded, color: AppColors.tertiary, size: 16.0),
                     ),
-                    const ObpPulseDot(color: AppColors.tertiary, size: 6.0),
+                    if (_isLoadingStation)
+                      const SizedBox(
+                        width: 10.0,
+                        height: 10.0,
+                        child: CircularProgressIndicator(strokeWidth: 1.5, color: AppColors.tertiary),
+                      )
+                    else if (_nearestStation != null && _nearestStation!.isFound)
+                      const ObpPulseDot(color: AppColors.statusSuccess, size: 6.0)
+                    else
+                      const ObpPulseDot(color: AppColors.statusWarning, size: 6.0),
                   ],
                 ),
                 const SizedBox(height: AppDimensions.sm),
                 const Text('Nearest Pump', style: AppTypography.labelSm),
                 const SizedBox(height: 2.0),
-                const Text(
-                  'Shell Pasir Gudang',
+                Text(
+                  _isLoadingStation
+                      ? 'Detecting GPS...'
+                      : (_nearestStation?.stationName ?? 'Locating pump...'),
                   style: AppTypography.labelMd,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2.0),
                 Text(
-                  '1.2 km • Geofence Ready',
-                  style: AppTypography.caption.copyWith(color: AppColors.statusSuccess),
+                  _isLoadingStation
+                      ? 'Scanning 5 km radius'
+                      : (_nearestStation?.statusText ?? 'Live GPS check'),
+                  style: AppTypography.caption.copyWith(
+                    color: (_nearestStation != null && _nearestStation!.isFound)
+                        ? AppColors.statusSuccess
+                        : AppColors.textMuted,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),

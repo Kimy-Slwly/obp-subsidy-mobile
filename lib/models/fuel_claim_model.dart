@@ -42,6 +42,16 @@ class FuelClaimModel {
   final String? managerFeedback;
   final DateTime createdAt;
 
+  // Anti-Spoofing & Fuel Audit Fields
+  final int? previousOdometer;
+  final int? distanceTravelled;
+  final double? kmPerLitre;
+  final double? ocrConfidence;
+  final String captureSource;
+  final String? imageHash;
+  final bool isAnomaly;
+  final String? anomalyReason;
+
   const FuelClaimModel({
     required this.id,
     required this.claimId,
@@ -65,6 +75,14 @@ class FuelClaimModel {
     this.status = ClaimStatus.pending,
     this.managerFeedback,
     required this.createdAt,
+    this.previousOdometer,
+    this.distanceTravelled,
+    this.kmPerLitre,
+    this.ocrConfidence,
+    this.captureSource = 'live_camera',
+    this.imageHash,
+    this.isAnomaly = false,
+    this.anomalyReason,
   });
 
   String get formattedDate {
@@ -126,6 +144,14 @@ class FuelClaimModel {
       status: ClaimStatus.fromString(data['status'] as String?),
       managerFeedback: data['managerFeedback'] as String?,
       createdAt: created,
+      previousOdometer: (data['previousOdometer'] as num?)?.toInt(),
+      distanceTravelled: (data['distanceTravelled'] as num?)?.toInt(),
+      kmPerLitre: (data['kmPerLitre'] as num?)?.toDouble(),
+      ocrConfidence: (data['ocrConfidence'] as num?)?.toDouble(),
+      captureSource: data['captureSource'] as String? ?? 'live_camera',
+      imageHash: data['imageHash'] as String?,
+      isAnomaly: data['isAnomaly'] as bool? ?? false,
+      anomalyReason: data['anomalyReason'] as String?,
     );
   }
 
@@ -152,6 +178,14 @@ class FuelClaimModel {
       'status': status.name,
       'managerFeedback': managerFeedback,
       'createdAt': createdAt.toIso8601String(),
+      'previousOdometer': previousOdometer,
+      'distanceTravelled': distanceTravelled,
+      'kmPerLitre': kmPerLitre,
+      'ocrConfidence': ocrConfidence,
+      'captureSource': captureSource,
+      'imageHash': imageHash,
+      'isAnomaly': isAnomaly,
+      'anomalyReason': anomalyReason,
     };
   }
 
